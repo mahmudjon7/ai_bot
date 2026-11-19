@@ -605,6 +605,76 @@ async def main():
     await feed(mcm("member", "left"))
     check((await db.chat_info(CHAT4))["active"] == 0, "bot chiqarilsa — nofaol")
 
+    # ================= PASTKI TUGMALAR (shaxsiy chat) =================
+    def kb_texts(d):
+        rm = d.get("reply_markup") or {}
+        return [b["text"] for row in rm.get("keyboard", []) for b in row]
+
+    START = [{"type": "bot_command", "offset": 0, "length": 6}]
+    n = await feed(pm(600, "/start", entities=START))
+    h = [d for d in sends(n) if d["chat_id"] == 600][0]
+    check("ℹ️ Yordam" in kb_texts(h) and "➕ Guruhga qo'shish" in kb_texts(h) and "🆔 Mening ID im" in kb_texts(h),
+          "oddiy foydalanuvchida pastki tugmalar: Yordam, Guruhga qo'shish, ID")
+    check("🛠 Admin panel" not in kb_texts(h) and "📣 Reklama tarqatish" not in kb_texts(h), "oddiy foydalanuvchida admin tugmalari yo'q")
+    n = await feed(pm(500, "/start", entities=START))
+    h = [d for d in sends(n) if d["chat_id"] == 500][0]
+    check({"🛠 Admin panel", "📊 Guruhlar", "📈 Statistika", "📣 Reklama tarqatish"} <= set(kb_texts(h)),
+          "super adminda qo'shimcha tugmalar bor")
+
+    n = await feed(pm(600, "➕ Guruhga qo'shish"))
+    a = [d for d in sends(n) if d["chat_id"] == 600][0]
+    check(any("startgroup=true" in (b.get("url") or "") for b in buttons(a)), "«Guruhga qo'shish» tugmasi havola beradi")
+    n = await feed(pm(600, "🆔 Mening ID im"))
+    check(any("600" in d["text"] for d in sends(n)), "«ID im» tugmasi ID ni ko'rsatadi")
+    n = await feed(pm(600, "ℹ️ Yordam"))
+    check(any("Salom" in d["text"] for d in sends(n)), "«Yordam» tugmasi yordam matnini beradi")
+    n = await feed(pm(600, "📊 Guruhlar"))
+    check(any("faqat bot egasi" in d["text"] for d in sends(n)), "oddiy foydalanuvchi «Guruhlar» tugmasini ishlata olmaydi")
+    n = await feed(pm(500, "📊 Guruhlar"))
+    g = [d for d in sends(n) if d["chat_id"] == 500][0]
+    check("Bot ishlayotgan guruhlar" in g["text"] and any(b["callback_data"].startswith("sa:g:") for b in buttons(g)),
+          "super admin «Guruhlar» tugmasi ro'yxat chiqaradi")
+    n = await feed(pm(500, "📈 Statistika"))
+    check(any("Statistika" in d["text"] for d in sends(n)), "«Statistika» tugmasi ishlaydi")
+    n = await feed(pm(500, "🛠 Admin panel"))
+    check(any("Super admin paneli" in d["text"] for d in sends(n)), "«Admin panel» tugmasi menyuni ochadi")
+    await feed(pm(500, "📣 Reklama tarqatish"))
+    n = await feed(pm(500, "🔥 yangi reklama"))
+    check(any("yuboraymi" in d["text"] for d in sends(n)), "«Reklama» tugmasidan keyingi xabar reklama bo'ldi")
+    await feed(pm(500, "📣 Reklama tarqatish"))
+    await feed(pm(500, "ℹ️ Yordam"))
+    n = await feed(pm(500, "oddiy xabar"))
+    check(not sends(n), "boshqa tugma bosilsa, reklama rejimi bekor bo'ladi")
+
+    # ================= GURUH PANELI (/panel) =================
+    n = await feed(cmd(1, "/panel"))
+    pnl = [d for d in sends(n) if "Boshqaruv paneli" in d["text"]]
+    check(len(pnl) == 1 and any(b["callback_data"] == f"pn:{CHAT}:lim:5" for b in buttons(pnl[0])), "/panel tugmalar bilan chiqdi")
+    n = await feed(cmd(200, "/panel"))
+    check(not [d for d in sends(n) if "Boshqaruv paneli" in d["text"]], "oddiy a'zo /panel och olmaydi")
+    n = await feed(cbq(200, f"pn:{CHAT}:lim:5"))
+    check((await db.get_chat(CHAT)).required != 5, "oddiy a'zo panelni bosa olmaydi")
+    n = await feed(cbq(1, f"pn:{CHAT}:lim:5"))
+    check((await db.get_chat(CHAT)).required == 5, "panel: limit 5 ga o'rnatildi")
+    ke = [d for nm, d in calls[n:] if nm == "EditMessageReplyMarkup"]
+    check(ke and any("5 ta odam" in b["text"] for row in ke[0]["reply_markup"]["inline_keyboard"] for b in row), "panel yangilandi")
+    await feed(cbq(1, f"pn:{CHAT}:flood:5"))
+    check((await db.get_chat(CHAT)).flood_limit == 5, "panel: flood 5")
+    was = (await db.get_chat(CHAT)).delete_service
+    await feed(cbq(1, f"pn:{CHAT}:svc:0"))
+    check((await db.get_chat(CHAT)).delete_service != was, "panel: xizmat xabarlari almashdi")
+    was = (await db.get_chat(CHAT)).notify
+    await feed(cbq(1, f"pn:{CHAT}:ntf:0"))
+    check((await db.get_chat(CHAT)).notify != was, "panel: progress xabari almashdi")
+    n = await feed(cbq(1, f"pn:{CHAT}:tq:0"))
+    check(any("Taqiqlar paneli" in d["text"] for d in sends(n)), "panel: «Taqiqlar» panelni ochadi")
+    n = await feed(cbq(1, f"pn:{CHAT}:st:0"))
+    check(any("Sozlamalar" in d["text"] for d in sends(n)), "panel: «Sozlamalar» ko'rsatadi")
+    await feed(cbq(1, f"pn:{CHAT}:lim:0"))
+    check((await db.get_chat(CHAT)).required == 0, "panel: limit 0 — o'chirildi")
+    n = await feed(cbq(1, f"pn:{CHAT}:x:0"))
+    check(any(nm == "DeleteMessage" for nm, _ in calls[n:]), "panel: «Yopish»")
+
     print(f"\nHammasi o'tdi: {ok} ta tekshiruv")
     await db.close()
 

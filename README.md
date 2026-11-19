@@ -33,6 +33,7 @@ takrorlansa vaqtincha mute qiladi.
 | `/ozod` (reply) | admin | shu odamni shartdan ozod qilish |
 | `/ozod_bekor` (reply) | admin | ozodlikni qaytarib olish |
 | `/sozlamalar` | admin | hamma sozlamalar holati |
+| `/panel` | admin | tugmali boshqaruv paneli |
 | `/taqiq` | admin | taqiqlar paneli (media, havola, forward) |
 | `/link on\|off` | admin | havolalarni (http, t.me) taqiqlash |
 | `/forward on\|off` | admin | forward xabarlarni taqiqlash |
@@ -40,6 +41,15 @@ takrorlansa vaqtincha mute qiladi.
 | `/soz_qosh a, b` | admin | taqiqlangan so'zlar qo'shish (buyruq xabari o'chiriladi) |
 | `/soz_ochir a` · `/sozlar` | admin | so'z o'chirish · soni (ro'yxat lichkaga yuboriladi) |
 | `/jazo N M` | admin | N ta qoidabuzarlikdan keyin M daqiqa mute (standart 3 va 60) |
+
+## Tugmalar (buyruq yozmasdan)
+- **Shaxsiy chatda** botga `/start` yozilgach pastda doimiy tugmalar chiqadi: **ℹ️ Yordam · ➕ Guruhga qo'shish · 🆔 Mening ID im**.
+  Super adminda qo'shimcha: **🛠 Admin panel · 📊 Guruhlar · 📈 Statistika · 📣 Reklama tarqatish**.
+- **Guruhda** admin `/panel` yozadi — tugmali panel: yozish sharti (➖ 0 3 5 10 ➕), flood, xizmat xabarlari, progress xabari,
+  🛡 Taqiqlar, ⚙️ Sozlamalar. Hech narsa yozish shart emas.
+- **Telegram «Menu» tugmasi** (yozish maydoni yonida) har kim uchun o'z buyruqlari ro'yxatini ko'rsatadi:
+  oddiy a'zoga `/holat`, `/top`, `/murojaat`; guruh adminlariga to'liq ro'yxat; super adminga shaxsiy chatda `/admin` ham.
+  Ro'yxat bot har ishga tushganda avtomatik yangilanadi.
 
 ## Taqiqlar paneli (guruh admini)
 `/taqiq` — tugmali panel: **havola, forward, rasm, video, stiker, GIF, ovozli xabar, dumaloq video, musiqa, fayl, kontakt,

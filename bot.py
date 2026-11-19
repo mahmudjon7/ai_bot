@@ -34,7 +34,9 @@ from aiogram.types import (
     ChatPermissions,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
     User,
 )
 from dotenv import load_dotenv
@@ -195,6 +197,7 @@ HELP_TEXT = (
     "3. <code>/sozlamalar</code> — hamma sozlamalarni ko'rish.\n\n"
     "<b>Buyruqlar (guruhda, admin uchun):</b>\n"
     "/limit <i>N</i> — kerakli odam soni (0 = o'chiq)\n"
+    "/panel — tugmali boshqaruv paneli (limit, flood, taqiqlar, sozlamalar)\n"
     "/taqiq — taqiqlar paneli: rasm, video, stiker, GIF, ovozli xabar, fayl, havola...\n"
     "/link on|off — havolalarni taqiqlash\n"
     "/forward on|off — forward xabarlarni taqiqlash\n"
@@ -214,18 +217,7 @@ async def cmd_start(m: Message, command: CommandObject, bot: Bot, db: DB) -> Non
     if command.command == "start" and arg.startswith("g") and arg[1:].lstrip("-").isdigit():
         await private_progress(m, bot, db, int(arg[1:]))
         return
-    me = await bot.me()
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="➕ Guruhga qo'shish",
-                    url=f"https://t.me/{me.username}?startgroup=true&admin=delete_messages+restrict_members",
-                )
-            ]
-        ]
-    )
-    await m.answer(HELP_TEXT, reply_markup=kb)
+    await m.answer(HELP_TEXT, reply_markup=main_kb(m.from_user.id))
 
 
 # --------------------------------------------------------- bot guruhga qo'shilganda
@@ -552,24 +544,27 @@ async def cmd_words(m: Message, bot: Bot, db: DB) -> None:
     await safe_delete(m)
 
 
-@router.message(Command("sozlamalar"), in_group)
-async def cmd_settings(m: Message, bot: Bot, db: DB) -> None:
-    if not await _admin_only(m, bot):
-        return
-    s = await db.get_chat(m.chat.id, m.chat.title)
+async def settings_text(db: DB, chat_id: int, title: str | None = None) -> str:
+    s = await db.get_chat(chat_id, title)
     yn = lambda v: "taqiqlangan" if v else "ruxsat"  # noqa: E731
-    text = (
+    return (
         "⚙️ <b>Sozlamalar</b>\n"
         f"👥 Yozish sharti: {('<b>' + str(s.required) + '</b> ta odam') if s.required else 'o`chiq'}\n"
         f"🔗 Havolalar: <b>{yn(s.block_links)}</b>\n"
         f"↪️ Forward: <b>{yn(s.block_forward)}</b>\n"
         f"🖼 Taqiqlangan media: <b>{', '.join(MEDIA_REASON[k] for k in MEDIA_BIT if s.block_media & MEDIA_BIT[k]) or 'yo`q'}</b>\n"
         f"⚡ Flood: {('<b>' + str(s.flood_limit) + '</b> xabar / ' + str(FLOOD_WINDOW) + ' soniya') if s.flood_limit else 'o`chiq'}\n"
-        f"🤬 Taqiqlangan so'zlar: <b>{len(await db.words(m.chat.id))}</b> ta\n"
+        f"🤬 Taqiqlangan so'zlar: <b>{len(await db.words(chat_id))}</b> ta\n"
         f"⚖️ Jazo: <b>{s.strike_limit}</b> ogohlantirish → <b>{s.mute_minutes}</b> daqiqa mute\n"
         f"🗑 Xizmat xabarlari: <b>{'o`chiriladi' if s.delete_service else 'qoladi'}</b>"
     ).replace("`", "'")
-    await send_temp(bot, m.chat.id, text, ttl=60)
+
+
+@router.message(Command("sozlamalar"), in_group)
+async def cmd_settings(m: Message, bot: Bot, db: DB) -> None:
+    if not await _admin_only(m, bot):
+        return
+    await send_temp(bot, m.chat.id, await settings_text(db, m.chat.id, m.chat.title), ttl=60)
     await safe_delete(m)
 
 
@@ -642,6 +637,101 @@ async def cb_taqiq(cb: CallbackQuery, bot: Bot, db: DB) -> None:
     await cb.answer("Saqlandi")
 
 
+# ------------------------------------------------- /panel: guruh admini uchun tugmali boshqaruv
+FLOOD_STEPS = [0, 3, 5, 8]
+
+
+def panel_kb(chat_id: int, s) -> InlineKeyboardMarkup:
+    def btn(text: str, act: str, arg: int = 0) -> InlineKeyboardButton:
+        return InlineKeyboardButton(text=text, callback_data=f"pn:{chat_id}:{act}:{arg}")
+
+    cur = s.required
+    nxt = FLOOD_STEPS[(FLOOD_STEPS.index(s.flood_limit) + 1) % len(FLOOD_STEPS)] if s.flood_limit in FLOOD_STEPS else 0
+    mark = lambda v: "✅" if v else "❌"  # noqa: E731
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"👥 Yozish sharti: {cur} ta odam" if cur else "👥 Yozish sharti: o'chiq",
+            callback_data="pn:noop")],
+        [btn("➖", "lim", max(0, cur - 1)), btn("0", "lim", 0), btn("3", "lim", 3),
+         btn("5", "lim", 5), btn("10", "lim", 10), btn("➕", "lim", min(100, cur + 1))],
+        [btn(f"⚡ Flood: {s.flood_limit} xabar / {FLOOD_WINDOW}s" if s.flood_limit else "⚡ Flood: o'chiq",
+             "flood", nxt)],
+        [btn(f"🗑 Xizmat xabarlari {mark(s.delete_service)}", "svc"),
+         btn(f"➕ Progress xabari {mark(s.notify)}", "ntf")],
+        [btn("🛡 Taqiqlar", "tq"), btn("⚙️ Sozlamalar", "st")],
+        [btn("✖️ Yopish", "x")],
+    ])
+
+
+PANEL_TEXT = (
+    "🎛 <b>Boshqaruv paneli</b>\n"
+    "Tugmalar bilan sozlang. Qo'shimcha: /jazo, /soz_qosh, /link, /forward, /ozod."
+)
+
+
+@router.message(Command("panel"), in_group)
+async def cmd_panel(m: Message, bot: Bot, db: DB) -> None:
+    if not await _admin_only(m, bot):
+        return
+    s = await db.get_chat(m.chat.id, m.chat.title)
+    await send_temp(bot, m.chat.id, PANEL_TEXT, ttl=300, reply_markup=panel_kb(m.chat.id, s))
+    await safe_delete(m)
+
+
+@router.callback_query(F.data == "pn:noop")
+async def cb_panel_noop(cb: CallbackQuery) -> None:
+    await cb.answer()
+
+
+@router.callback_query(F.data.regexp(r"^pn:-?\d+:[a-z]+:\d+$"))
+async def cb_panel(cb: CallbackQuery, bot: Bot, db: DB) -> None:
+    _, chat_id, act, arg = cb.data.split(":")
+    chat_id, arg = int(chat_id), int(arg)
+    if not await is_admin(bot, chat_id, cb.from_user.id, fresh=True):
+        await cb.answer("Faqat guruh adminlari o'zgartira oladi.", show_alert=True)
+        return
+    msg = cb.message
+    s = await db.get_chat(chat_id)
+    toast = "Saqlandi"
+    if act == "lim":
+        await db.set_value(chat_id, "required", max(0, min(100, arg)))
+        if arg and not await bot_can_delete(bot, chat_id):
+            toast = "⚠️ Menda «Xabarlarni o'chirish» huquqi yo'q — meni shunday admin qiling!"
+    elif act == "flood":
+        await db.set_value(chat_id, "flood_limit", max(0, min(50, arg)))
+    elif act == "svc":
+        await db.set_value(chat_id, "delete_service", int(not s.delete_service))
+    elif act == "ntf":
+        await db.set_value(chat_id, "notify", int(not s.notify))
+    elif act == "tq":
+        await send_temp(bot, chat_id, TAQIQ_TEXT, ttl=300, reply_markup=taqiq_kb(chat_id, s))
+        await cb.answer()
+        return
+    elif act == "st":
+        await send_temp(bot, chat_id, await settings_text(db, chat_id), ttl=60)
+        await cb.answer()
+        return
+    elif act == "x":
+        if msg:
+            try:
+                await bot.delete_message(msg.chat.id, msg.message_id)
+            except TelegramAPIError:
+                pass
+        await cb.answer()
+        return
+    else:
+        await cb.answer()
+        return
+    if msg:
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=msg.chat.id, message_id=msg.message_id,
+                reply_markup=panel_kb(chat_id, await db.get_chat(chat_id)))
+        except TelegramAPIError:
+            pass
+    await cb.answer(toast, show_alert=toast.startswith("⚠️"))
+
+
 # ---------------------------------------------- xizmat o'chirilgan guruhlar (super admin)
 class ServiceSwitch(BaseMiddleware):
     """Super admin guruh xizmatini o'chirgan bo'lsa, bot u yerda hech narsa qilmaydi."""
@@ -665,7 +755,7 @@ class ServiceSwitch(BaseMiddleware):
             parts = event.data.split(":")
             cid = None
             try:
-                if parts[0] in ("tq", "ck") and len(parts) >= 3:
+                if parts[0] in ("tq", "ck", "pn") and len(parts) >= 3:
                     cid = int(parts[1])
                 elif parts[0] == "ap" and parts[1] == "n":
                     cid = int(parts[2])
@@ -1190,7 +1280,7 @@ async def cmd_cancel(m: Message) -> None:
         await m.answer("Bekor qilindi.")
 
 
-async def sa_list(cb: CallbackQuery, db: DB, page: int) -> None:
+async def view_list(db: DB, page: int) -> tuple[str, InlineKeyboardMarkup]:
     total = await db.count_chats()
     pages = max(1, -(-total // SA_PAGE))
     page = max(0, min(page, pages - 1))
@@ -1208,7 +1298,26 @@ async def sa_list(cb: CallbackQuery, db: DB, page: int) -> None:
     kb.append([InlineKeyboardButton(text="⬅️ Menyu", callback_data="sa:m")])
     text = (f"📊 <b>Bot ishlayotgan guruhlar:</b> {total} ta\n🟢 faol · ⏸ xizmat to'xtatilgan"
             if total else "Hozircha bot hech qaysi guruhda yo'q.")
-    await sa_edit(cb, text, InlineKeyboardMarkup(inline_keyboard=kb))
+    return text, InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+async def sa_list(cb: CallbackQuery, db: DB, page: int) -> None:
+    text, kb = await view_list(db, page)
+    await sa_edit(cb, text, kb)
+
+
+async def view_stats(db: DB) -> tuple[str, InlineKeyboardMarkup]:
+    st = await db.stats()
+    text = (
+        "📈 <b>Statistika</b>\n"
+        f"Faol guruhlar: <b>{st['groups']}</b> (shundan xizmati to'xtatilgan: {st['disabled']})\n"
+        f"Bot chiqarilgan guruhlar: {st['left']}\n"
+        f"Hisoblangan qo'shishlar: <b>{st['invites']}</b>\n"
+        f"Ochiq murojaatlar: {st['pending']}\n"
+        f"Ismi saqlangan foydalanuvchilar: {st['users']}"
+    )
+    return text, InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Menyu", callback_data="sa:m")]])
 
 
 async def sa_detail(cb: CallbackQuery, bot: Bot, db: DB, chat_id: int) -> None:
@@ -1357,17 +1466,8 @@ async def cb_super(cb: CallbackQuery, bot: Bot, db: DB) -> None:
         await sa_list(cb, db, 0)
         await cb.answer("Guruhdan chiqildi")
     elif act == "s":
-        st = await db.stats()
-        text = (
-            "📈 <b>Statistika</b>\n"
-            f"Faol guruhlar: <b>{st['groups']}</b> (shundan xizmati to'xtatilgan: {st['disabled']})\n"
-            f"Bot chiqarilgan guruhlar: {st['left']}\n"
-            f"Hisoblangan qo'shishlar: <b>{st['invites']}</b>\n"
-            f"Ochiq murojaatlar: {st['pending']}\n"
-            f"Ismi saqlangan foydalanuvchilar: {st['users']}"
-        )
-        await sa_edit(cb, text, InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Menyu", callback_data="sa:m")]]))
+        text, kb = await view_stats(db)
+        await sa_edit(cb, text, kb)
         await cb.answer()
     elif act == "ad":
         _ad_wait[uid] = None
@@ -1398,6 +1498,93 @@ async def cb_super(cb: CallbackQuery, bot: Bot, db: DB) -> None:
         await cb.answer()
 
 
+# ------------------------------------------------ shaxsiy chatdagi pastki tugmalar
+BTN_ADD = "➕ Guruhga qo'shish"
+BTN_HELP = "ℹ️ Yordam"
+BTN_ID = "🆔 Mening ID im"
+BTN_ADMIN = "🛠 Admin panel"
+BTN_GROUPS = "📊 Guruhlar"
+BTN_STATS = "📈 Statistika"
+BTN_AD = "📣 Reklama tarqatish"
+
+
+def main_kb(uid: int) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_HELP)], [KeyboardButton(text=BTN_ID)]]
+    if is_super(uid):
+        rows = [
+            [KeyboardButton(text=BTN_ADMIN)],
+            [KeyboardButton(text=BTN_GROUPS), KeyboardButton(text=BTN_STATS)],
+            [KeyboardButton(text=BTN_AD)],
+        ] + rows
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
+
+
+_private = F.chat.type == ChatType.PRIVATE
+SUPER_ONLY = "⛔ Bu bo'lim faqat bot egasi uchun."
+
+
+@router.message(_private, F.text == BTN_HELP)
+async def btn_help(m: Message) -> None:
+    _ad_wait.pop(m.from_user.id, None)
+    await m.answer(HELP_TEXT, reply_markup=main_kb(m.from_user.id))
+
+
+@router.message(_private, F.text == BTN_ADD)
+async def btn_add(m: Message, bot: Bot) -> None:
+    _ad_wait.pop(m.from_user.id, None)
+    me = await bot.me()
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+        text="➕ Guruhni tanlash",
+        url=f"https://t.me/{me.username}?startgroup=true&admin=delete_messages+restrict_members",
+    )]])
+    await m.answer("Botni guruhingizga qo'shing. Telegram uni <b>admin</b> qilishni ham so'raydi — "
+                   "<i>xabarlarni o'chirish</i> va <i>a'zolarni cheklash</i> huquqlarini bering.", reply_markup=kb)
+
+
+@router.message(_private, F.text == BTN_ID)
+async def btn_id(m: Message) -> None:
+    await m.answer(f"Sizning Telegram ID: <code>{m.from_user.id}</code>")
+
+
+@router.message(_private, F.text == BTN_ADMIN)
+async def btn_admin(m: Message) -> None:
+    await cmd_admin(m)
+
+
+@router.message(_private, F.text == BTN_GROUPS)
+async def btn_groups(m: Message, db: DB) -> None:
+    if not is_super(m.from_user.id):
+        await m.answer(SUPER_ONLY)
+        return
+    _ad_wait.pop(m.from_user.id, None)
+    text, kb = await view_list(db, 0)
+    await m.answer(text, reply_markup=kb)
+
+
+@router.message(_private, F.text == BTN_STATS)
+async def btn_stats(m: Message, db: DB) -> None:
+    if not is_super(m.from_user.id):
+        await m.answer(SUPER_ONLY)
+        return
+    _ad_wait.pop(m.from_user.id, None)
+    text, kb = await view_stats(db)
+    await m.answer(text, reply_markup=kb)
+
+
+@router.message(_private, F.text == BTN_AD)
+async def btn_ad(m: Message, db: DB) -> None:
+    if not is_super(m.from_user.id):
+        await m.answer(SUPER_ONLY)
+        return
+    _ad_wait[m.from_user.id] = None
+    n = len(await db.active_chat_ids())
+    await m.answer(
+        f"📣 <b>Reklama tarqatish</b>\n\nReklama xabarini yuboring (matn, rasm, video — istalgani, "
+        f"<b>bitta xabar</b>). U <b>{n} ta faol guruhga</b> nusxalanadi.\nBekor qilish: /bekor",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor", callback_data="sa:adno")]]),
+    )
+
+
 def _waiting_ad(m: Message) -> bool:
     return bool(m.from_user) and is_super(m.from_user.id) and _ad_wait.get(m.from_user.id, "x") is None
 
@@ -1415,6 +1602,43 @@ async def capture_ad(m: Message, db: DB) -> None:
 
 
 # ------------------------------------------------------------------------ main
+async def setup_commands(bot: Bot) -> None:
+    """Telegram'dagi "Menu" tugmasi ostidagi buyruqlar ro'yxati (kim nimani ko'radi)."""
+    from aiogram.types import (
+        BotCommand, BotCommandScopeAllChatAdministrators, BotCommandScopeAllGroupChats,
+        BotCommandScopeChat, BotCommandScopeDefault,
+    )
+
+    def cmds(*pairs: tuple[str, str]) -> list[BotCommand]:
+        return [BotCommand(command=c, description=d) for c, d in pairs]
+
+    private = cmds(("start", "Boshlash va yordam"), ("help", "Yordam"), ("id", "Mening Telegram ID im"))
+    member = cmds(("holat", "Men nechta odam qo'shdim"), ("top", "Eng ko'p odam qo'shganlar"),
+                  ("murojaat", "Cheklov xato bo'lsa, adminga yozish"))
+    admin = cmds(
+        ("panel", "Tugmali boshqaruv paneli"), ("taqiq", "Rasm, video, stiker... taqiqlari"),
+        ("limit", "Yozish uchun kerakli odam soni"), ("sozlamalar", "Hamma sozlamalar"),
+        ("link", "Havolalarni taqiqlash on/off"), ("forward", "Forward taqiqi on/off"),
+        ("flood", "Flood himoyasi"), ("jazo", "Ogohlantirish va mute sozlamasi"),
+        ("soz_qosh", "Taqiqlangan so'z qo'shish"), ("soz_ochir", "Taqiqlangan so'zni o'chirish"),
+        ("sozlar", "Taqiqlangan so'zlar soni"), ("xizmat", "Qo'shdi/chiqdi xabarlarini o'chirish"),
+        ("bildirish", "Har qo'shishda qisqa xabar"), ("ozod", "Odamni shartdan ozod qilish (reply)"),
+        ("ozod_bekor", "Ozodlikni qaytarib olish (reply)"),
+    ) + member
+    jobs = [
+        (private, BotCommandScopeDefault()),
+        (member, BotCommandScopeAllGroupChats()),
+        (admin, BotCommandScopeAllChatAdministrators()),
+    ]
+    for uid in SUPER_ADMINS:
+        jobs.append((private + cmds(("admin", "Super admin paneli")), BotCommandScopeChat(chat_id=uid)))
+    for commands, scope in jobs:
+        try:
+            await bot.set_my_commands(commands, scope=scope)
+        except TelegramAPIError as e:
+            log.warning("buyruqlar menyusini o'rnatib bo'lmadi (%s): %s", type(scope).__name__, e)
+
+
 async def main() -> None:
     load_dotenv()
     logging.basicConfig(
@@ -1437,6 +1661,7 @@ async def main() -> None:
     await bot.delete_webhook(drop_pending_updates=False)
     me = await bot.me()
     log.info("Bot ishga tushdi: @%s", me.username)
+    await setup_commands(bot)
     try:
         await dp.start_polling(bot, allowed_updates=["message", "edited_message", "my_chat_member", "callback_query"])
     finally:
