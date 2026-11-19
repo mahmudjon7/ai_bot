@@ -25,7 +25,8 @@ takrorlansa vaqtincha mute qiladi.
 | Buyruq | Kim | Vazifasi |
 |---|---|---|
 | `/limit N` | admin | kerakli odam soni (0 = o'chiq) |
-| `/holat` | hamma | men nechta odam qo'shdim |
+| `/holat` | hamma | men nechta odam qo'shdim (shu guruhda) |
+| `/qoshganlarim` | hamma (lichkada) | hamma guruhlar bo'yicha qo'shganlarim |
 | `/murojaat sabab` | hamma | cheklov xato bo'lsa, adminga yozish |
 | `/top` | hamma | eng ko'p qo'shganlar (top 10) |
 | `/xizmat on\|off` | admin | «qo'shdi/chiqdi» xabarlarini o'chirish |
@@ -50,6 +51,13 @@ takrorlansa vaqtincha mute qiladi.
 - **Telegram «Menu» tugmasi** (yozish maydoni yonida) har kim uchun o'z buyruqlari ro'yxatini ko'rsatadi:
   oddiy a'zoga `/holat`, `/top`, `/murojaat`; guruh adminlariga to'liq ro'yxat; super adminga shaxsiy chatda `/admin` ham.
   Ro'yxat bot har ishga tushganda avtomatik yangilanadi.
+
+## Nechta odam qo'shdim? — botda ko'rish
+- Guruhda odam qo'shilganda bot qisqa xabar yozadi (`➕ Ali: 3/5 — yana 2 ta`) va pastida **🤖 Botga o'tib ko'rish** tugmasi bo'ladi.
+  Tugma botning shaxsiy chatini ochadi va o'sha guruhdagi hisobni (3/5, progress bar) ko'rsatadi. Tabrik xabarida ham shu tugma bor.
+- Botning shaxsiy chatida pastdagi **👥 Qo'shganlarim** tugmasi (yoki `/qoshganlarim`) **hamma guruhlar bo'yicha** hisobni
+  ko'rsatadi: har guruhda nechta odam qo'shgan, shart bo'lsa necha qolgan, jami son. **🔄 Yangilash** tugmasi hisobni yangilaydi.
+- Qo'shilgan odamlarning ismi saqlanmaydi, faqat soni.
 
 ## Taqiqlar paneli (guruh admini)
 `/taqiq` — tugmali panel: **havola, forward, rasm, video, stiker, GIF, ovozli xabar, dumaloq video, musiqa, fayl, kontakt,

@@ -206,7 +206,8 @@ HELP_TEXT = (
     "/jazo <i>N M</i> — N ta ogohlantirishdan keyin M daqiqa mute (masalan <code>/jazo 3 60</code>)\n"
     "/xizmat on|off · /bildirish on|off\n"
     "/ozod · /ozod_bekor — (reply) shartlardan ozod qilish\n\n"
-    "<b>Hamma uchun:</b> /holat — men nechta odam qo'shdim · /top — eng ko'p qo'shganlar · "
+    "<b>Hamma uchun:</b> /holat — men nechta odam qo'shdim (guruhda) · /qoshganlarim — hamma guruhlar bo'yicha "
+    "(shaxsiy chatda) · /top — eng ko'p qo'shganlar · "
     "/murojaat <i>sabab</i> — cheklov xato bo'lsa, adminga yozish (cheklov xabaridagi 🆘 tugma ham shu)"
 )
 
@@ -279,6 +280,7 @@ async def on_new_members(m: Message, bot: Bot, db: DB) -> None:
                     f"🎉 {mention(adder)}, tabriklaymiz! Siz {plural_odam(cnt)} qo'shdingiz — "
                     f"endi guruhda <b>yozishingiz mumkin</b>.",
                     ttl=45,
+                    reply_markup=await see_kb(bot, m.chat.id),
                 )
             elif cnt < s.required and s.notify:
                 await send_temp(
@@ -286,7 +288,8 @@ async def on_new_members(m: Message, bot: Bot, db: DB) -> None:
                     m.chat.id,
                     f"➕ {mention(adder)}: <b>{cnt}/{s.required}</b> — yozish uchun yana "
                     f"{plural_odam(s.required - cnt)} qo'shing.\n{progress_bar(cnt, s.required)}",
-                    ttl=15,
+                    ttl=30,
+                    reply_markup=await see_kb(bot, m.chat.id),
                 )
 
     if s.delete_service:
@@ -772,6 +775,56 @@ router.edited_message.outer_middleware(ServiceSwitch())
 router.callback_query.outer_middleware(ServiceSwitch())
 
 
+# ------------------------------------------------ «Qo'shganlarim»: hamma guruhlar bo'yicha hisob
+BTN_MINE = "👥 Qo'shganlarim"
+
+
+async def mine_view(db: DB, uid: int) -> tuple[str, InlineKeyboardMarkup]:
+    groups = await db.user_groups(uid)
+    if not groups:
+        text = ("👥 <b>Qo'shganlarim</b>\n\nSiz hali hech qaysi guruhda odam qo'shmagansiz.\n"
+                "Guruhga o'ting va do'stlaringizni <i>«Odam qo'shish»</i> orqali qo'shing — hisob shu yerda ko'rinadi.")
+    else:
+        lines = []
+        for g in groups:
+            c, r = g["count"], g["required"]
+            name = html.escape(_short(g["title"], 34))
+            if r <= 0:
+                lines.append(f"📍 <b>{name}</b>\n   {c} ta odam (guruhda shart yo'q)")
+            elif c >= r:
+                lines.append(f"📍 <b>{name}</b>\n   ✅ <b>{c}/{r}</b> — yozishingiz mumkin")
+            else:
+                lines.append(f"📍 <b>{name}</b>\n   ⛔ <b>{c}/{r}</b>  {progress_bar(c, r)}\n   ➕ yana {plural_odam(r - c)} qo'shing")
+        total = sum(g["count"] for g in groups)
+        text = "👥 <b>Siz qo'shgan odamlar</b>\n\n" + "\n\n".join(lines) + f"\n\nJami: <b>{total}</b> ta"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Yangilash", callback_data="my:0")]])
+    return text, kb
+
+
+@router.message(Command("qoshganlarim"), F.chat.type == ChatType.PRIVATE)
+async def cmd_mine(m: Message, db: DB) -> None:
+    text, kb = await mine_view(db, m.from_user.id)
+    await m.answer(text, reply_markup=kb)
+
+
+@router.message(F.chat.type == ChatType.PRIVATE, F.text == BTN_MINE)
+async def btn_mine(m: Message, db: DB) -> None:
+    _ad_wait.pop(m.from_user.id, None)
+    text, kb = await mine_view(db, m.from_user.id)
+    await m.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "my:0")
+async def cb_mine(cb: CallbackQuery, db: DB) -> None:
+    text, kb = await mine_view(db, cb.from_user.id)
+    if cb.message:
+        try:
+            await cb.message.edit_text(text, reply_markup=kb)
+        except TelegramAPIError:
+            pass  # o'zgarish yo'q bo'lsa Telegram xato qaytaradi
+    await cb.answer("Yangilandi")
+
+
 # ------------------------------------------------- progress xabari va tugmalar
 def progress_bar(cnt: int, req: int, width: int = 10) -> str:
     if req <= 0:
@@ -795,6 +848,14 @@ def done_text(who: str, cnt: int, req: int) -> str:
     if req <= 0:
         return f"✅ {who}, guruhda hozircha shart yo'q — <b>yozishingiz mumkin</b>."
     return f"✅ {who}, tayyor! <b>{cnt}/{req}</b> — endi guruhda <b>yozishingiz mumkin</b>."
+
+
+async def see_kb(bot: Bot, chat_id: int) -> InlineKeyboardMarkup:
+    """«Botga o'tib ko'rish» — botning shaxsiy chatida shu guruhdagi hisobni ochadi."""
+    me = await bot.me()
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🤖 Botga o'tib ko'rish", url=f"https://t.me/{me.username}?start=g{chat_id}")
+    ]])
 
 
 async def need_kb(bot: Bot, chat_id: int, user_id: int) -> InlineKeyboardMarkup:
@@ -870,11 +931,13 @@ def _private_text(title: str, cnt: int, req: int, ok: bool) -> str:
     )
 
 
-def _private_kb(chat_id: int, user_id: int, ok: bool) -> InlineKeyboardMarkup | None:
+def _private_kb(chat_id: int, user_id: int, ok: bool) -> InlineKeyboardMarkup:
+    mine = [InlineKeyboardButton(text="👥 Hamma guruhlar bo'yicha", callback_data="my:0")]
     if ok:
-        return None
+        return InlineKeyboardMarkup(inline_keyboard=[mine])
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"ck:{chat_id}:{user_id}")],
+        mine,
         [InlineKeyboardButton(text="🆘 Adminga yozish", callback_data=f"ap:n:{chat_id}:{user_id}")],
     ])
 
@@ -1509,7 +1572,8 @@ BTN_AD = "📣 Reklama tarqatish"
 
 
 def main_kb(uid: int) -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_HELP)], [KeyboardButton(text=BTN_ID)]]
+    rows = [[KeyboardButton(text=BTN_MINE)], [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=BTN_ID)]]
     if is_super(uid):
         rows = [
             [KeyboardButton(text=BTN_ADMIN)],
@@ -1612,7 +1676,8 @@ async def setup_commands(bot: Bot) -> None:
     def cmds(*pairs: tuple[str, str]) -> list[BotCommand]:
         return [BotCommand(command=c, description=d) for c, d in pairs]
 
-    private = cmds(("start", "Boshlash va yordam"), ("help", "Yordam"), ("id", "Mening Telegram ID im"))
+    private = cmds(("start", "Boshlash va yordam"), ("qoshganlarim", "Men qo'shgan odamlar (hamma guruhlar)"),
+                    ("help", "Yordam"), ("id", "Mening Telegram ID im"))
     member = cmds(("holat", "Men nechta odam qo'shdim"), ("top", "Eng ko'p odam qo'shganlar"),
                   ("murojaat", "Cheklov xato bo'lsa, adminga yozish"))
     admin = cmds(

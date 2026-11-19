@@ -144,11 +144,14 @@ class DB:
         await self.conn.commit()
         async with self.conn.execute(
             "SELECT required, delete_service, notify, block_links, block_forward, "
-            "flood_limit, strike_limit, mute_minutes, enabled, block_media "
+            "flood_limit, strike_limit, mute_minutes, enabled, block_media, title "
             "FROM chats WHERE chat_id=?",
             (chat_id,),
         ) as cur:
-            req, ds, nt, bl, bf, fl, sl, mm, en, bm = await cur.fetchone()
+            req, ds, nt, bl, bf, fl, sl, mm, en, bm, stored_title = await cur.fetchone()
+        if title and title != stored_title:  # nom yo'q bo'lsa yoki guruh nomi o'zgargan bo'lsa yangilaymiz
+            await self.conn.execute("UPDATE chats SET title=? WHERE chat_id=?", (title, chat_id))
+            await self.conn.commit()
         return ChatSettings(chat_id, req, bool(ds), bool(nt), bool(bl), bool(bf), fl, sl, mm, bool(en), bm)
 
     async def set_required(self, chat_id: int, n: int) -> None:
@@ -414,3 +417,14 @@ class DB:
             "pending": await one("SELECT COUNT(*) FROM appeals WHERE status='pending'"),
             "users": await one("SELECT COUNT(*) FROM users"),
         }
+
+    async def user_groups(self, inviter_id: int, limit: int = 15) -> list[dict]:
+        """Foydalanuvchi odam qo'shgan guruhlar (bot hozir bor guruhlar): nom, shart, nechta qo'shgan."""
+        assert self.conn
+        async with self.conn.execute(
+            "SELECT c.chat_id, COALESCE(c.title, CAST(c.chat_id AS TEXT)), c.required, COUNT(*) n "
+            "FROM invites i JOIN chats c ON c.chat_id = i.chat_id "
+            "WHERE i.inviter_id=? AND c.active=1 GROUP BY c.chat_id ORDER BY n DESC LIMIT ?",
+            (inviter_id, limit),
+        ) as cur:
+            return [{"chat_id": r[0], "title": r[1], "required": r[2], "count": r[3]} async for r in cur]

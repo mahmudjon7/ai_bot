@@ -675,6 +675,42 @@ async def main():
     n = await feed(cbq(1, f"pn:{CHAT}:x:0"))
     check(any(nm == "DeleteMessage" for nm, _ in calls[n:]), "panel: «Yopish»")
 
+    # ================= «QO'SHGANLARIM» (hamma guruhlar bo'yicha) =================
+    await db.set_active(CHAT, True)
+    await db.set_value(CHAT, "required", 5)
+    await db.add_invite(CHAT3, 120, 8001)
+    await db.add_invite(CHAT3, 120, 8002)
+    n = await feed(pm(120, "👥 Qo'shganlarim"))
+    mt = [d for d in sends(n) if d["chat_id"] == 120][0]
+    check("3/5" in mt["text"] and "Test guruh" in mt["text"] and "yana 2 ta odam" in mt["text"], "tugma: shartli guruhda 3/5, yana 2 ta")
+    check("Yoqub guruhi" in mt["text"] and "2 ta odam" in mt["text"] and "Jami: <b>5</b>" in mt["text"], "shartsiz guruh va jami son ko'rsatildi")
+    check(any(b.get("callback_data") == "my:0" for b in buttons(mt)), "«Yangilash» tugmasi bor")
+    n = await feed(pm(600, "/qoshganlarim", entities=[{"type": "bot_command", "offset": 0, "length": 13}]))
+    check(any("hech qaysi guruhda odam qo'shmagansiz" in d["text"] for d in sends(n)), "/qoshganlarim: hech kim qo'shmagan bo'lsa tushuntiradi")
+    await db.add_invite(CHAT, 120, 8003)
+    await db.add_invite(CHAT, 120, 8004)
+    n = await feed(cbq(120, "my:0", chat=120, chat_type="private"))
+    check(edits(n) and "5/5" in edits(n)[0]["text"] and "yozishingiz mumkin" in edits(n)[0]["text"], "«Yangilash» yangi hisobni ko'rsatadi (5/5)")
+    n = await feed(pm(120, f"/start g{CHAT}", entities=[{"type": "bot_command", "offset": 0, "length": 6}]))
+    pv = [d for d in sends(n) if d["chat_id"] == 120][0]
+    check(any(b.get("callback_data") == "my:0" for b in buttons(pv)), "guruhdan «Botga o'tish» bosilganda ham «Hamma guruhlar» tugmasi bor")
+    n = await feed(pm(120, "/start", entities=[{"type": "bot_command", "offset": 0, "length": 6}]))
+    h = [d for d in sends(n) if d["chat_id"] == 120][0]
+    check("👥 Qo'shganlarim" in kb_texts(h), "pastki tugmalarda «Qo'shganlarim» bor")
+
+    # ================= «Botga o'tib ko'rish» tugmasi odam qo'shilganda =================
+    await db.set_value(CHAT, "required", 5)
+    await db.set_value(CHAT, "notify", 1)
+    n = await feed(added(700, [701]))
+    note = [d for d in sends(n) if "1/5" in d["text"]]
+    check(len(note) == 1, "odam qo'shilganda progress xabari chiqdi (1/5)")
+    check([b.get("url") for b in buttons(note[0]) if b.get("url")] == [f"https://t.me/testbot?start=g{CHAT}"],
+          "xabarda «Botga o'tib ko'rish» tugmasi bor")
+    n = await feed(added(700, [702, 703, 704, 705]))
+    done = [d for d in sends(n) if "tabriklaymiz" in d["text"]]
+    check(len(done) == 1 and any(b.get("url") for b in buttons(done[0])), "tabrik xabarida ham «Botga o'tib ko'rish» tugmasi bor")
+    check((await db.chat_info(CHAT))["title"] == "Test guruh", "guruh nomi bazaga yozilgan")
+
     print(f"\nHammasi o'tdi: {ok} ta tekshiruv")
     await db.close()
 
