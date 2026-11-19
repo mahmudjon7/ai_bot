@@ -40,6 +40,7 @@ BOT_ID = 123
 ADMINS = {1}
 calls: list[tuple[str, dict]] = []
 FAIL_COPY: set[int] = set()
+FAIL_DM: set[int] = set()
 _mid = itertools.count(1000)
 
 
@@ -95,6 +96,8 @@ class FakeSession(BaseSession):
                 return make_admin(uid, is_bot=(uid == BOT_ID))
             return ChatMemberMember(status="member", user=user(uid))
         if isinstance(method, SendMessage):
+            if method.chat_id in FAIL_DM:
+                raise TelegramForbiddenError(method=method, message="Forbidden: bot can't initiate conversation with a user")
             return Message(
                 message_id=next(_mid), date=datetime.now(),
                 chat={"id": method.chat_id, "type": "supergroup", "title": "T"},
@@ -710,6 +713,78 @@ async def main():
     done = [d for d in sends(n) if "tabriklaymiz" in d["text"]]
     check(len(done) == 1 and any(b.get("url") for b in buttons(done[0])), "tabrik xabarida ham «Botga o'tib ko'rish» tugmasi bor")
     check((await db.chat_info(CHAT))["title"] == "Test guruh", "guruh nomi bazaga yozilgan")
+
+    # ================= BOT GURUHGA QO'SHILGANDA: TUGMALI BOSHLANG'ICH XABAR =================
+    CHAT5, CHAT6 = -1005, -1006
+
+    def mcm2(chat_id, old, new, admin=False):
+        bu = {"id": BOT_ID, "is_bot": True, "first_name": "bot", "username": "testbot"}
+        newm = {"status": new, "user": bu}
+        if admin:
+            newm = make_admin(BOT_ID, True).model_dump(exclude_none=True, mode="json")
+        return Update.model_validate({"update_id": next(_upd), "my_chat_member": {
+            "chat": {"id": chat_id, "type": "supergroup", "title": f"G{chat_id}"}, "from": frm(1),
+            "date": int(datetime.now().timestamp()),
+            "old_chat_member": {"status": old, "user": bu}, "new_chat_member": newm}})
+
+    # bot qo'shildi: xabar GURUHGA emas, qo'shgan odamga (id=1) shaxsiy chatda boradi
+    n = await feed(mcm2(CHAT5, "left", "member"))
+    check(not [d for d in sends(n) if d["chat_id"] == CHAT5], "bot guruhga hech narsa yozmadi")
+    hi = [d for d in sends(n) if d["chat_id"] == 1][0]
+    cbs = [b["callback_data"] for b in buttons(hi)]
+    check("Salom" in hi["text"] and f"G{CHAT5}" in hi["text"] and "1️⃣ Meni" in hi["text"]
+          and f"ob:{CHAT5}:5" in cbs and f"ob:{CHAT5}:0" in cbs and f"ob:{CHAT5}:p" in cbs,
+          "qo'shgan adminga DM: guruh nomi, admin qilish, limit tugmalari")
+
+    n = await feed(cbq(200, f"ob:{CHAT5}:5", chat=CHAT5))
+    check((await db.get_chat(CHAT5)).required == 0 and "Faqat guruh adminlari" in answers(n)[0]["text"], "oddiy a'zo limit tanlay olmaydi")
+    n = await feed(cbq(1, f"ob:{CHAT5}:5", chat=1, chat_type="private"))
+    check((await db.get_chat(CHAT5)).required == 5, "admin DM'da «5 ta» ni bosdi — limit o'rnatildi")
+    e = edits(n)[0]
+    check("5 ta odam" in e["text"] and e["chat_id"] == 1
+          and any(b["callback_data"] == f"ob:{CHAT5}:10" for row in e["reply_markup"]["inline_keyboard"] for b in row),
+          "DM xabari yangilandi, tugmalar qoldi (fikrini o'zgartirishi mumkin)")
+    n = await feed(cbq(1, f"ob:{CHAT5}:10", chat=1, chat_type="private"))
+    check((await db.get_chat(CHAT5)).required == 10, "keyin «10 ta» ni bossa, o'zgaradi")
+    n = await feed(cbq(1, f"ob:{CHAT5}:p", chat=1, chat_type="private"))
+    check(any("Boshqaruv paneli" in d["text"] and d["chat_id"] == 1 for d in sends(n)), "«Boshqa sozlamalar» paneli DM'da ochiladi")
+    n = await feed(cbq(1, f"pn:{CHAT5}:flood:5", chat=1, chat_type="private"))
+    check((await db.get_chat(CHAT5)).flood_limit == 5, "panel DM'dan ham ishlaydi")
+    n = await feed(cbq(1, f"pn:{CHAT5}:tq:0", chat=1, chat_type="private"))
+    check(any(d["chat_id"] == 1 for d in sends(n)) and not any(d["chat_id"] == CHAT5 for d in sends(n)),
+          "«Taqiqlar» DM'ga keladi, guruhga emas")
+    n = await feed(cbq(1, f"ob:{CHAT5}:0", chat=1, chat_type="private"))
+    check((await db.get_chat(CHAT5)).required == 0 and "shart qo'yilmadi" in edits(n)[0]["text"], "«Shartsiz» tanlanadi")
+
+    # admin bo'lgach (DM): limit yo'q bo'lsa tugmalar qayta, bor bo'lsa qisqa tasdiq
+    n = await feed(mcm2(CHAT5, "member", "administrator", admin=True))
+    again = [d for d in sends(n) if d["chat_id"] == 1]
+    check(not [d for d in sends(n) if d["chat_id"] == CHAT5] and again
+          and any(b["callback_data"] == f"ob:{CHAT5}:5" for b in buttons(again[0])) and "✅ Admin huquqlarim joyida" in again[0]["text"],
+          "admin qilingach DM: limit hali yo'q — tugmalar qayta chiqdi")
+    await db.set_value(CHAT5, "required", 7)
+    n = await feed(mcm2(CHAT5, "member", "administrator", admin=True))
+    check(any("Hozirgi shart: <b>7 ta odam</b>" in d["text"] and d["chat_id"] == 1 for d in sends(n)), "limit bor bo'lsa — DM'da qisqa tasdiq")
+
+    # to'g'ridan-to'g'ri admin sifatida qo'shilsa (startgroup havolasi)
+    n = await feed(mcm2(CHAT6, "left", "administrator", admin=True))
+    d6 = [d for d in sends(n) if d["chat_id"] == 1][0]
+    check("✅ Admin huquqlarim joyida" in d6["text"] and any(b["callback_data"].startswith("ob:") for b in buttons(d6)),
+          "admin sifatida qo'shilsa — 1-qadam bajarilgan deb ko'rsatiladi")
+
+    # admin botni hali /start qilmagan: DM yopiq → guruhda faqat qisqa tugma
+    FAIL_DM.add(1)
+    n = await feed(mcm2(-1007, "left", "member"))
+    g7 = [d for d in sends(n) if d["chat_id"] == -1007]
+    check(len(g7) == 1 and "Salom" not in g7[0]["text"] and f"start=s{-1007}" in str(buttons(g7[0])),
+          "DM yopiq bo'lsa guruhga faqat qisqa «Botda sozlash» tugmasi chiqadi")
+    FAIL_DM.discard(1)
+
+    # o'sha tugma: /start s<chat> — faqat admin uchun
+    n = await feed(pm(1, f"/start s{-1007}", entities=entities_cmd("/start")))
+    check(any("ob:-1007:5" in str(buttons(d)) for d in sends(n) if d["chat_id"] == 1), "/start s<chat> admin uchun limit tugmalarini ochadi")
+    n = await feed(pm(300, f"/start s{-1007}", entities=entities_cmd("/start")))
+    check(any("faqat guruh adminlari" in d["text"] for d in sends(n) if d["chat_id"] == 300), "oddiy a'zo uchun rad etiladi")
 
     print(f"\nHammasi o'tdi: {ok} ta tekshiruv")
     await db.close()

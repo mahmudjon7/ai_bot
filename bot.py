@@ -222,32 +222,91 @@ async def cmd_start(m: Message, command: CommandObject, bot: Bot, db: DB) -> Non
 
 
 # --------------------------------------------------------- bot guruhga qo'shilganda
+ONBOARD_CHOICES = [3, 5, 10, 15, 20, 30]
+
+
+def onboarding_kb(chat_id: int) -> InlineKeyboardMarkup:
+    def b(n: int) -> InlineKeyboardButton:
+        return InlineKeyboardButton(text=f"{n} ta", callback_data=f"ob:{chat_id}:{n}")
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [b(n) for n in ONBOARD_CHOICES[:3]],
+        [b(n) for n in ONBOARD_CHOICES[3:]],
+        [InlineKeyboardButton(text="🚫 Shartsiz (hamma yozadi)", callback_data=f"ob:{chat_id}:0")],
+        [InlineKeyboardButton(text="🎛 Boshqa sozlamalar", callback_data=f"ob:{chat_id}:p")],
+    ])
+
+
+def onboarding_text(rights_ok: bool) -> str:
+    step1 = ("1️⃣ ✅ Admin huquqlarim joyida." if rights_ok else
+             "1️⃣ Meni <b>admin</b> qiling (<i>xabarlarni o'chirish</i> va <i>a'zolarni cheklash</i> huquqlari bilan).")
+    return (
+        "👋 <b>Salom!</b> Meni qo'shganingiz uchun rahmat.\n\n"
+        f"{step1}\n"
+        "2️⃣ A'zolar guruhda yozishdan oldin <b>nechta odam qo'shishi kerak</b>?\n"
+        "Guruh admini, tanlang 👇"
+    )
+
+
 @router.my_chat_member(in_group)
 async def on_my_status(ev: ChatMemberUpdated, bot: Bot, db: DB) -> None:
     old, new = ev.old_chat_member.status, ev.new_chat_member.status
-    await db.get_chat(ev.chat.id, ev.chat.title)
+    s = await db.get_chat(ev.chat.id, ev.chat.title)
     if new in (ChatMemberStatus.LEFT, ChatMemberStatus.KICKED):
         await db.set_active(ev.chat.id, False)  # bot guruhdan chiqarildi
         return
     await db.set_active(ev.chat.id, True)
     await db.set_title(ev.chat.id, ev.chat.title)
+    can = new == ChatMemberStatus.ADMINISTRATOR and bool(getattr(ev.new_chat_member, "can_delete_messages", False))
+
     if new in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR) and old in (
         ChatMemberStatus.LEFT,
         ChatMemberStatus.KICKED,
     ):
-        await bot.send_message(
-            ev.chat.id,
-            "👋 Salom! Meni <b>admin</b> qiling (<i>xabarlarni o'chirish</i> huquqi bilan), "
-            "so'ng yozing: <code>/limit 5</code> — a'zolar yozishdan oldin 5 ta odam qo'shishi shart bo'ladi.",
-        )
+        # bot yangi qo'shildi: salomlashadi va limitni tugmalar bilan so'raydi
+        await bot.send_message(ev.chat.id, onboarding_text(can), reply_markup=onboarding_kb(ev.chat.id))
     elif new == ChatMemberStatus.ADMINISTRATOR and old == ChatMemberStatus.MEMBER:
-        can = getattr(ev.new_chat_member, "can_delete_messages", False)
-        text = (
-            "✅ Rahmat, admin bo'ldim. Endi <code>/limit 5</code> deb sozlang."
-            if can
-            else "⚠️ Admin bo'ldim, lekin <b>«Xabarlarni o'chirish»</b> huquqi yo'q — usiz ishlay olmayman."
-        )
-        await bot.send_message(ev.chat.id, text)
+        if not can:
+            await bot.send_message(
+                ev.chat.id,
+                "⚠️ Admin bo'ldim, lekin <b>«Xabarlarni o'chirish»</b> huquqi yo'q — usiz ishlay olmayman.")
+        elif s.required <= 0:
+            await bot.send_message(ev.chat.id, onboarding_text(True), reply_markup=onboarding_kb(ev.chat.id))
+        else:
+            await bot.send_message(
+                ev.chat.id,
+                f"✅ Rahmat, admin bo'ldim. Hozirgi shart: <b>{plural_odam(s.required)}</b>. O'zgartirish: /panel")
+
+
+@router.callback_query(F.data.regexp(r"^ob:-?\d+:(\d+|p)$"))
+async def cb_onboard(cb: CallbackQuery, bot: Bot, db: DB) -> None:
+    _, chat_id, val = cb.data.split(":")
+    chat_id = int(chat_id)
+    if not await is_admin(bot, chat_id, cb.from_user.id, fresh=True):
+        await cb.answer("Faqat guruh adminlari tanlay oladi.", show_alert=True)
+        return
+    if val == "p":
+        s = await db.get_chat(chat_id)
+        await send_temp(bot, chat_id, PANEL_TEXT, ttl=300, reply_markup=panel_kb(chat_id, s))
+        await cb.answer()
+        return
+    n = int(val)
+    await db.set_value(chat_id, "required", n)
+    rights = await bot_can_delete(bot, chat_id)
+    if n == 0:
+        text = "✅ Shart qo'yilmadi — hamma erkin yozadi. Keyin o'zgartirish: /panel"
+    else:
+        text = (f"✅ Tayyor! Endi guruhda yozish uchun <b>{plural_odam(n)}</b> qo'shish shart. "
+                "Adminlar bundan ozod.\nO'zgartirish uchun tugmalarni qayta bosing yoki /panel.")
+    if not rights:
+        text += "\n\n⚠️ Menda <b>«Xabarlarni o'chirish»</b> huquqi yo'q — meni shunday admin qiling, aks holda shart ishlamaydi."
+    if cb.message:
+        try:
+            await bot.edit_message_text(text, chat_id=cb.message.chat.id, message_id=cb.message.message_id,
+                                        reply_markup=onboarding_kb(chat_id))
+        except TelegramAPIError:
+            pass  # xuddi shu tugma qayta bosilsa matn o'zgarmaydi
+    await cb.answer("Saqlandi")
 
 
 # ------------------------------------------------------------ xizmat xabarlari
@@ -758,7 +817,7 @@ class ServiceSwitch(BaseMiddleware):
             parts = event.data.split(":")
             cid = None
             try:
-                if parts[0] in ("tq", "ck", "pn") and len(parts) >= 3:
+                if parts[0] in ("tq", "ck", "pn", "ob") and len(parts) >= 3:
                     cid = int(parts[1])
                 elif parts[0] == "ap" and parts[1] == "n":
                     cid = int(parts[2])

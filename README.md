@@ -19,6 +19,15 @@ takrorlansa vaqtincha mute qiladi.
 - **Adminlar, anonim admin, kanal postlari va /ozod qilinganlar** shartdan ozod.
 
 ## Sozlash (guruhda)
+**Eng oson yo'l:** botni guruhga qo'shing — bot guruhga yozmaydi, balki **botni qo'shgan odamning o'ziga shaxsiy chatda** yozadi:
+*«a'zolar yozishdan oldin nechta odam qo'shishi kerak?»* — **3 / 5 / 10 / 15 / 20 / 30 ta** yoki **🚫 Shartsiz**. Faqat guruh adminlari
+bosa oladi. Fikrni o'zgartirsa, boshqa tugmani bosadi. Qolgan sozlamalar (flood, taqiqlar...) **🎛 Boshqa sozlamalar** (yoki guruhda `/panel`) orqali.
+Bot admin bo'lmasa, xabarda buni eslatadi; admin qilingach limit hali tanlanmagan bo'lsa, tugmalar qayta chiqadi.
+Agar qo'shgan odam botga hali `/start` bosmagan bo'lsa (Telegram botga birinchi yozishga ruxsat bermaydi), guruhda faqat bitta qisqa
+**⚙️ Botda sozlash** tugmasi chiqadi — u botni ochib, xuddi shu savolni beradi (faqat adminlar uchun). Shuning uchun guruh egasi botga bir marta `/start` bossa, yaxshi.
+
+Qo'lda sozlash:
+
 1. Botni guruhga qo'shing va **admin** qiling — **«Xabarlarni o'chirish»** va (mute uchun) **«A'zolarni cheklash»** huquqlari kerak.
 2. `/limit 5` — yozish uchun 5 ta odam qo'shish shart. `/limit 0` — o'chirish. (Faqat adminlar.)
 
