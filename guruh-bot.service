@@ -1,0 +1,15 @@
+# VPS da (root siz): ~/.config/systemd/user/guruh-bot.service
+# Yoqish:  systemctl --user daemon-reload && systemctl --user enable --now guruh-bot
+# Loglar:  journalctl --user -u guruh-bot -f
+[Unit]
+Description=Guruh qo'riqchisi Telegram boti
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/guruh-bot
+ExecStart=%h/guruh-bot/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
