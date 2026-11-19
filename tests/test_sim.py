@@ -772,6 +772,19 @@ async def main():
     check("✅ Admin huquqlarim joyida" in d6["text"] and any(b["callback_data"].startswith("ob:") for b in buttons(d6)),
           "admin sifatida qo'shilsa — 1-qadam bajarilgan deb ko'rsatiladi")
 
+    # son yozib kiritish (DM'da, tugmasiz)
+    await feed(mcm2(CHAT5, "left", "member"))
+    n = await feed(pm(1, "7"))
+    check((await db.get_chat(CHAT5)).required == 7 and any("7 ta odam" in d["text"] and d["chat_id"] == 1 for d in sends(n)),
+          "DM'da «7» yozildi — limit 7 bo'ldi")
+    n = await feed(pm(1, "500"))
+    check((await db.get_chat(CHAT5)).required == 7 and any("0 dan 100" in d["text"] for d in sends(n)), "100 dan katta son rad etiladi")
+    n = await feed(pm(300, "9"))
+    check((await db.get_chat(CHAT5)).required == 7 and not sends(n), "kutmayotgan odamning soni e'tiborga olinmaydi")
+    await feed(cbq(1, f"ob:{CHAT5}:5", chat=1, chat_type="private"))
+    n = await feed(pm(1, "12"))
+    check((await db.get_chat(CHAT5)).required == 12, "tugmadan keyin ham son yozib o'zgartirsa bo'ladi")
+
     # admin botni hali /start qilmagan: DM yopiq → guruhda faqat qisqa tugma
     FAIL_DM.add(1)
     n = await feed(mcm2(-1007, "left", "member"))

@@ -218,6 +218,14 @@ async def cmd_start(m: Message, command: CommandObject, bot: Bot, db: DB) -> Non
     if command.command == "start" and arg.startswith("g") and arg[1:].lstrip("-").isdigit():
         await private_progress(m, bot, db, int(arg[1:]))
         return
+    if command.command == "start" and arg.startswith("s") and arg[1:].lstrip("-").isdigit():
+        chat_id = int(arg[1:])
+        if await is_admin(bot, chat_id, m.from_user.id, fresh=True):
+            s = await db.get_chat(chat_id)
+            await send_onboarding(bot, db, m.from_user.id, chat_id, s.title)
+        else:
+            await m.answer("Bu sozlamalar faqat guruh adminlari uchun.")
+        return
     await m.answer(HELP_TEXT, reply_markup=main_kb(m.from_user.id))
 
 
@@ -237,15 +245,34 @@ def onboarding_kb(chat_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-def onboarding_text(rights_ok: bool) -> str:
+def onboarding_text(rights_ok: bool, title: str | None = None) -> str:
+    where = f"«<b>{html.escape(title)}</b>» guruhiga" if title else "guruhga"
     step1 = ("1️⃣ ✅ Admin huquqlarim joyida." if rights_ok else
-             "1️⃣ Meni <b>admin</b> qiling (<i>xabarlarni o'chirish</i> va <i>a'zolarni cheklash</i> huquqlari bilan).")
+             "1️⃣ Meni guruhda <b>admin</b> qiling (<i>xabarlarni o'chirish</i> va "
+             "<i>a'zolarni cheklash</i> huquqlari bilan).")
     return (
-        "👋 <b>Salom!</b> Meni qo'shganingiz uchun rahmat.\n\n"
+        f"👋 <b>Salom!</b> Siz meni {where} qo'shdingiz.\n\n"
         f"{step1}\n"
         "2️⃣ A'zolar guruhda yozishdan oldin <b>nechta odam qo'shishi kerak</b>?\n"
-        "Guruh admini, tanlang 👇"
+        "Tanlang 👇"
     )
+
+
+async def dm_admin(bot: Bot, user_id: int, text: str, **kw) -> bool:
+    """Guruhni qo'shgan odamga shaxsiy chatda yozadi. Bot /start bosilmagan bo'lsa — False."""
+    try:
+        await bot.send_message(user_id, text, **kw)
+        return True
+    except TelegramAPIError as e:
+        log.info("DM yuborilmadi user=%s: %s", user_id, e)
+        return False
+
+
+async def send_onboarding(bot: Bot, db: DB, user_id: int, chat_id: int, title: str | None = None,
+                          rights: bool | None = None) -> bool:
+    if rights is None:
+        rights = await bot_can_delete(bot, chat_id)
+    return await dm_admin(bot, user_id, onboarding_text(rights, title), reply_markup=onboarding_kb(chat_id))
 
 
 @router.my_chat_member(in_group)
@@ -258,24 +285,34 @@ async def on_my_status(ev: ChatMemberUpdated, bot: Bot, db: DB) -> None:
     await db.set_active(ev.chat.id, True)
     await db.set_title(ev.chat.id, ev.chat.title)
     can = new == ChatMemberStatus.ADMINISTRATOR and bool(getattr(ev.new_chat_member, "can_delete_messages", False))
+    who = ev.from_user  # botni qo'shgan / admin qilgan odam
+    human = who is not None and not who.is_bot and who.id != ANON_ADMIN_ID
 
     if new in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR) and old in (
         ChatMemberStatus.LEFT,
         ChatMemberStatus.KICKED,
     ):
-        # bot yangi qo'shildi: salomlashadi va limitni tugmalar bilan so'raydi
-        await bot.send_message(ev.chat.id, onboarding_text(can), reply_markup=onboarding_kb(ev.chat.id))
-    elif new == ChatMemberStatus.ADMINISTRATOR and old == ChatMemberStatus.MEMBER:
+        # bot yangi qo'shildi: sozlash savoli guruhga emas, qo'shgan odamning o'ziga yuboriladi
+        if human:
+            await db.upsert_user(who.id, name_of(who))
+            if await send_onboarding(bot, db, who.id, ev.chat.id, ev.chat.title, can):
+                return
+        # shaxsiy chat yopiq (bot hali /start qilinmagan) — guruhda faqat qisqa tugma
+        me = await bot.me()
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text="⚙️ Botda sozlash (faqat admin)", url=f"https://t.me/{me.username}?start=s{ev.chat.id}")]])
+        await send_temp(bot, ev.chat.id,
+                        "👋 Guruh admini, sozlash uchun pastdagi tugmani bosing.", ttl=600, reply_markup=kb)
+    elif new == ChatMemberStatus.ADMINISTRATOR and old == ChatMemberStatus.MEMBER and human:
         if not can:
-            await bot.send_message(
-                ev.chat.id,
-                "⚠️ Admin bo'ldim, lekin <b>«Xabarlarni o'chirish»</b> huquqi yo'q — usiz ishlay olmayman.")
+            await dm_admin(bot, who.id,
+                           "⚠️ Admin bo'ldim, lekin <b>«Xabarlarni o'chirish»</b> huquqi yo'q — usiz ishlay olmayman.")
         elif s.required <= 0:
-            await bot.send_message(ev.chat.id, onboarding_text(True), reply_markup=onboarding_kb(ev.chat.id))
+            await send_onboarding(bot, db, who.id, ev.chat.id, ev.chat.title, True)
         else:
-            await bot.send_message(
-                ev.chat.id,
-                f"✅ Rahmat, admin bo'ldim. Hozirgi shart: <b>{plural_odam(s.required)}</b>. O'zgartirish: /panel")
+            await dm_admin(bot, who.id,
+                           f"✅ Rahmat, admin bo'ldim. Hozirgi shart: <b>{plural_odam(s.required)}</b>. "
+                           "O'zgartirish: guruhda /panel")
 
 
 @router.callback_query(F.data.regexp(r"^ob:-?\d+:(\d+|p)$"))
@@ -285,21 +322,28 @@ async def cb_onboard(cb: CallbackQuery, bot: Bot, db: DB) -> None:
     if not await is_admin(bot, chat_id, cb.from_user.id, fresh=True):
         await cb.answer("Faqat guruh adminlari tanlay oladi.", show_alert=True)
         return
+    private = bool(cb.message) and cb.message.chat.type == ChatType.PRIVATE
     if val == "p":
         s = await db.get_chat(chat_id)
-        await send_temp(bot, chat_id, PANEL_TEXT, ttl=300, reply_markup=panel_kb(chat_id, s))
+        if private:
+            await bot.send_message(cb.message.chat.id, PANEL_TEXT, reply_markup=panel_kb(chat_id, s))
+        else:
+            await send_temp(bot, chat_id, PANEL_TEXT, ttl=300, reply_markup=panel_kb(chat_id, s))
         await cb.answer()
         return
     n = int(val)
     await db.set_value(chat_id, "required", n)
     rights = await bot_can_delete(bot, chat_id)
+    title = (await db.get_chat(chat_id)).title
+    where = f" «{html.escape(title)}»" if title and private else ""
     if n == 0:
-        text = "✅ Shart qo'yilmadi — hamma erkin yozadi. Keyin o'zgartirish: /panel"
+        text = f"✅ Guruhda{where} shart qo'yilmadi — hamma erkin yozadi. Keyin o'zgartirish mumkin."
     else:
-        text = (f"✅ Tayyor! Endi guruhda yozish uchun <b>{plural_odam(n)}</b> qo'shish shart. "
-                "Adminlar bundan ozod.\nO'zgartirish uchun tugmalarni qayta bosing yoki /panel.")
+        text = (f"✅ Tayyor! Guruhda{where} yozish uchun endi <b>{plural_odam(n)}</b> qo'shish shart. "
+                "Adminlar bundan ozod.\nFikringiz o'zgarsa, tugmalarni qayta bosing.")
     if not rights:
-        text += "\n\n⚠️ Menda <b>«Xabarlarni o'chirish»</b> huquqi yo'q — meni shunday admin qiling, aks holda shart ishlamaydi."
+        text += ("\n\n⚠️ Menda <b>«Xabarlarni o'chirish»</b> huquqi yo'q — "
+                 "meni guruhda shunday admin qiling, aks holda shart ishlamaydi.")
     if cb.message:
         try:
             await bot.edit_message_text(text, chat_id=cb.message.chat.id, message_id=cb.message.message_id,
@@ -765,12 +809,13 @@ async def cb_panel(cb: CallbackQuery, bot: Bot, db: DB) -> None:
         await db.set_value(chat_id, "delete_service", int(not s.delete_service))
     elif act == "ntf":
         await db.set_value(chat_id, "notify", int(not s.notify))
-    elif act == "tq":
-        await send_temp(bot, chat_id, TAQIQ_TEXT, ttl=300, reply_markup=taqiq_kb(chat_id, s))
-        await cb.answer()
-        return
-    elif act == "st":
-        await send_temp(bot, chat_id, await settings_text(db, chat_id), ttl=60)
+    elif act in ("tq", "st"):
+        text = TAQIQ_TEXT if act == "tq" else await settings_text(db, chat_id)
+        kb = taqiq_kb(chat_id, s) if act == "tq" else None
+        if msg and msg.chat.type == ChatType.PRIVATE:  # shaxsiy chatda javob shu yerning o'zida
+            await bot.send_message(msg.chat.id, text, reply_markup=kb)
+        else:
+            await send_temp(bot, chat_id, text, ttl=300 if act == "tq" else 60, reply_markup=kb)
         await cb.answer()
         return
     elif act == "x":
